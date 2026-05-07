@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+
+"$ROOT_DIR/scripts/symphony/doctor.sh" --quiet
+
+export LINEAR_API_KEY="$(read_env_required LINEAR_API_KEY)"
+export LINEAR_PROJECT_SLUG="$(read_env_required LINEAR_PROJECT_SLUG)"
+export SOURCE_REPO_URL="$(read_path_required SOURCE_REPO_URL)"
+export SYMPHONY_WORKSPACE_ROOT="$(read_path_required SYMPHONY_WORKSPACE_ROOT)"
+export SYMPHONY_SOURCE_REPO_ROOT="$ROOT_DIR"
+CODEX_BIN_VALUE="${CODEX_BIN:-$(command -v codex || true)}"
+if [[ -z "${CODEX_BIN_VALUE}" ]]; then
+  echo "Missing codex binary in PATH" >&2
+  exit 1
+fi
+export CODEX_BIN="$CODEX_BIN_VALUE"
+GH_TOKEN_VALUE="$(read_env_optional GH_TOKEN || true)"
+if [[ -n "${GH_TOKEN_VALUE}" ]]; then
+  export GH_TOKEN="$GH_TOKEN_VALUE"
+fi
+PORT="$(resolve_port)"
+
+mkdir -p "$ROOT_DIR/.symphony" "$RUN_DIR" "$LOGS_ROOT" "$SYMPHONY_WORKSPACE_ROOT"
+
+# Symphony resolves env vars for secrets and paths, but not tracker.project_slug.
+awk -v slug="$LINEAR_PROJECT_SLUG" '
+  $0 == "  project_slug: $LINEAR_PROJECT_SLUG" {
+    print "  project_slug: " slug
+    next
+  }
+  { print }
+' "$WORKFLOW_FILE" > "$RUNTIME_WORKFLOW_FILE"
+
+if [[ ! -d "$VENDOR_DIR/.git" ]]; then
+  git clone --depth 1 https://github.com/openai/symphony "$VENDOR_DIR"
+else
+  git -C "$VENDOR_DIR" pull --ff-only origin main
+fi
+
+cd "$SYMPHONY_DIR"
+
+mise trust
+mise install
+mise exec -- mix setup
+mise exec -- mix build
+exec mise exec -- ./bin/symphony \
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails \
+  --logs-root "$LOGS_ROOT" \
+  --port "$PORT" \
+  "$RUNTIME_WORKFLOW_FILE"
